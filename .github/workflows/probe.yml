@@ -1,6 +1,10 @@
 name: probe-tablecheck-api
 
 on:
+  push:
+    paths:
+      - "scripts/probe_api.py"
+      - ".github/workflows/probe.yml"
   workflow_dispatch:
     inputs:
       shop_slug:
