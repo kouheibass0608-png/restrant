@@ -170,6 +170,42 @@ def main() -> None:
             st, body = fetch(url)
             print(f"  {n}名 {date} {hhmm} [{label}] -> HTTP {st} {body.strip()[:300]}")
 
+    # --- 3.5) 2名の「枠そのもの」を確認 (空き有無に関わらず) -----------------
+    # 空き枠だけ見ていると営業時間帯を誤認するため、グリッド全体を見る。
+    print("\n=== 2名の枠グリッド (available を問わず全時間帯) ===")
+    seen_times: dict[str, set[str]] = {}
+    for wk in range(0, 21, 7):
+        d = (dt.datetime.now(JST) + dt.timedelta(days=3 + wk)).date().isoformat()
+        params = {
+            "reservation[start_date]": d,
+            "reservation[num_people_adult]": 2,
+            "reservation[num_people_child]": 0,
+        }
+        st, body = fetch(
+            f"https://www.tablecheck.com/ja/shops/{slug}/available/timetable"
+            f"?{urllib.parse.urlencode(params)}"
+        )
+        if st != 200:
+            continue
+        try:
+            slots = (json.loads(body).get("data") or {}).get("slots") or {}
+        except json.JSONDecodeError:
+            continue
+        for date, times in slots.items():
+            ts = set()
+            for info in times.values():
+                if isinstance(info, dict) and "seconds" in info:
+                    sec = int(info["seconds"])
+                    ts.add(f"{sec // 3600:02d}:{sec % 3600 // 60:02d}")
+            if ts:
+                seen_times[date] = ts
+    weekday_ja = ["月", "火", "水", "木", "金", "土", "日"]
+    for date in sorted(seen_times)[:21]:
+        w = weekday_ja[dt.date.fromisoformat(date).weekday()]
+        print(f"  {date}({w}): {sorted(seen_times[date])}")
+    all_times = sorted({t for ts in seen_times.values() for t in ts})
+    print(f"  → 出現する全時間帯: {all_times}")
+
     # --- 4) OnlineAvailability.requestData の実装を確認 ----------------------
     print("\n=== バンドル内 OnlineAvailability.requestData ===")
     bundles = [
