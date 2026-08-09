@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""TableCheck の予約ウィジェットが使う内部APIを調査するスクリプト (v3)。
+"""TableCheck の予約ウィジェットの内部APIを調査するスクリプト。
 
-www.tablecheck.com の /shops/{slug}/available* エンドポイントの
-正しいリクエストパラメータを特定する。
+主な用途:
+  1. 仕様変更で監視が壊れたときの原因調査
+  2. 「APIが空きと言っている枠が、本当に予約できるのか」の検証
 
 使い方:
     python scripts/probe_api.py [shop_slug]
@@ -21,12 +22,11 @@ import urllib.parse
 import urllib.request
 from zoneinfo import ZoneInfo
 
+JST = ZoneInfo("Asia/Tokyo")
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
-
-MAX_BODY_PRINT = 2500
 
 
 def fetch(url: str, accept: str = "application/json", xhr: bool = True) -> tuple[int, str]:
@@ -50,97 +50,143 @@ def fetch(url: str, accept: str = "application/json", xhr: bool = True) -> tuple
         try:
             if e.headers.get("Content-Encoding") == "gzip":
                 raw = gzip.GzipFile(fileobj=io.BytesIO(raw)).read()
-            body = raw.decode("utf-8", errors="replace")
+            return e.code, raw.decode("utf-8", errors="replace")
         except Exception:
-            body = "<body unreadable>"
-        return e.code, body
+            return e.code, "<unreadable>"
     except Exception as e:
         return -1, f"<{type(e).__name__}: {e}>"
 
 
-def show(name: str, url: str, status: int, body: str) -> None:
-    print(f"\n=== {name} ===")
-    print(f"URL: {url}")
-    print(f"HTTP {status}")
-    body = body.strip()
-    if body.startswith("{") or body.startswith("["):
-        try:
-            parsed = json.loads(body)
-            pretty = json.dumps(parsed, ensure_ascii=False, indent=1)
-            if len(pretty) > MAX_BODY_PRINT:
-                pretty = pretty[:MAX_BODY_PRINT] + "\n... (truncated)"
-            print(pretty)
-            return
-        except Exception:
-            pass
-    print(body[:MAX_BODY_PRINT] + ("... (truncated)" if len(body) > MAX_BODY_PRINT else ""))
+def slots_for(slug: str, start_date: str, num_people: int) -> dict[str, dict]:
+    """{日付: {"HH:MM": epoch}} の形で「予約可能」枠だけ返す。"""
+    params = {
+        "reservation[start_date]": start_date,
+        "reservation[num_people_adult]": num_people,
+        "reservation[num_people_child]": 0,
+    }
+    url = (
+        f"https://www.tablecheck.com/ja/shops/{slug}/available/timetable"
+        f"?{urllib.parse.urlencode(params)}"
+    )
+    status, body = fetch(url)
+    if status != 200:
+        print(f"  timetable HTTP {status}: {body[:200]}")
+        return {}
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        print(f"  timetable JSON parse error: {body[:200]}")
+        return {}
+    if "data" not in data:
+        print(f"  timetable unexpected: {json.dumps(data, ensure_ascii=False)[:200]}")
+        return {}
+    out: dict[str, dict] = {}
+    for date, times in (data["data"].get("slots") or {}).items():
+        avail = {}
+        for epoch, info in times.items():
+            if isinstance(info, dict) and info.get("available"):
+                sec = int(info["seconds"])
+                avail[f"{sec // 3600:02d}:{sec % 3600 // 60:02d}"] = int(epoch)
+        if avail:
+            out[date] = avail
+    return out
 
 
 def main() -> None:
     slug = sys.argv[1] if len(sys.argv) > 1 else "joelrobuchon"
-    jst = ZoneInfo("Asia/Tokyo")
-    target_date = (dt.datetime.now(jst) + dt.timedelta(days=14)).date()
-    dinner = dt.datetime.combine(target_date, dt.time(18, 0), tzinfo=jst)
-    epoch = int(dinner.timestamp())
-
-    # 1) バンドルから requestData 関数の全体を抽出
     page_url = f"https://www.tablecheck.com/ja/shops/{slug}/reserve"
     status, html = fetch(page_url, accept="text/html", xhr=False)
-    print(f"=== reserve page ===\nHTTP {status}")
+    print(f"=== 予約ページ === HTTP {status} ({len(html)} bytes)")
 
-    bundle_urls = [
+    # --- 1) 人数セレクタに 1 は存在するか -------------------------------------
+    print("\n=== 人数セレクタ (#reservation_num_people_adult) ===")
+    m = re.search(
+        r'<select[^>]*id="reservation_num_people_adult".*?</select>', html, re.S
+    )
+    if m:
+        opts = re.findall(r"<option[^>]*value=\"([^\"]*)\"[^>]*>(.*?)</option>", m.group(0))
+        print(f"  選択肢 {len(opts)} 件: {[(v, re.sub(r'<[^>]+>', '', t).strip()) for v, t in opts]}")
+        selected = re.search(r'<option[^>]*selected[^>]*value="([^"]*)"', m.group(0))
+        print(f"  既定値: {selected.group(1) if selected else '(なし)'}")
+    else:
+        print("  (セレクタが見つかりません — 別UIの可能性)")
+
+    # 人数まわりの設定値
+    print("\n=== 人数まわりの設定値 (インラインJS) ===")
+    for pat in (
+        r"max_num_people\s*=\s*[^;]+",
+        r"min_num_people\s*=\s*[^;]+",
+        r"num_people[A-Za-z_]*\s*=\s*[^;]{0,60}",
+    ):
+        for hit in sorted(set(re.findall(pat, html)))[:10]:
+            print(f"  {hit.strip()}")
+
+    # --- 2) 1名と2名の空き枠を同一週で比較 -----------------------------------
+    start = (dt.datetime.now(JST) + dt.timedelta(days=3)).date().isoformat()
+    print(f"\n=== 1名 vs 2名 の空き比較 (start_date={start}) ===")
+    per_size = {}
+    for n in (1, 2, 3, 4):
+        s = slots_for(slug, start, n)
+        per_size[n] = s
+        total = sum(len(v) for v in s.values())
+        print(f"  {n}名: {len(s)}日 / {total}枠  {dict(list(s.items())[:3])}")
+
+    # --- 3) 予約ボタン相当のチェック (/available) ----------------------------
+    # タイムテーブルが「空き」と言う枠が、実際に予約可能かを確認する。
+    # 予約ページで時間を選んだときに呼ばれるエンドポイント。
+    print("\n=== /available による実予約可否チェック ===")
+    for n in (1, 2):
+        target = None
+        for date, times in sorted(per_size[n].items()):
+            for hhmm, epoch in sorted(times.items()):
+                target = (date, hhmm, epoch)
+                break
+            if target:
+                break
+        if not target:
+            print(f"  {n}名: 空き枠が無いためスキップ")
+            continue
+        date, hhmm, epoch = target
+        variants = {
+            "最小": {"start_at_epoch": epoch, "num_people_adult": n},
+            "全人数フィールド": {
+                "start_at_epoch": epoch,
+                "num_people_adult": n,
+                "num_people_child": 0,
+                "num_people_senior": 0,
+                "num_people_baby": 0,
+            },
+            "reservation[] 形式": {
+                "reservation[start_at_epoch]": epoch,
+                "reservation[num_people_adult]": n,
+                "reservation[num_people_child]": 0,
+            },
+        }
+        for label, params in variants.items():
+            url = (
+                f"https://www.tablecheck.com/ja/shops/{slug}/available"
+                f"?{urllib.parse.urlencode(params)}"
+            )
+            st, body = fetch(url)
+            print(f"  {n}名 {date} {hhmm} [{label}] -> HTTP {st} {body.strip()[:300]}")
+
+    # --- 4) OnlineAvailability.requestData の実装を確認 ----------------------
+    print("\n=== バンドル内 OnlineAvailability.requestData ===")
+    bundles = [
         s
         for s in re.findall(r'<script[^>]+src="([^"]+)"', html)
         if "assets/table_check/application-" in s
     ]
-    js = ""
-    if bundle_urls:
-        s, js = fetch(bundle_urls[0], accept="*/*", xhr=False)
-        print(f"bundle: {bundle_urls[0]} HTTP {s} ({len(js)} bytes)")
-
-    def dump_after(label: str, pattern: str, after: int = 2500, before: int = 200) -> None:
-        print(f"\n--- {label} ---")
-        m = re.search(pattern, js)
-        if not m:
-            print("(no match)")
-            return
-        start = max(0, m.start() - before)
-        print(js[start : m.end() + after])
-
-    dump_after("Timetable request (available/timetable)", r"available/timetable")
-    dump_after("OnlineAvailability request ('/available')", r"['\"]/available['\"]")
-    dump_after("startAtEpoch def", r"startAtEpoch\s*=\s*function", after=800)
-
-    # 2) パラメータ候補を試す
-    base = f"https://www.tablecheck.com/ja/shops/{slug}"
-    date_s = target_date.isoformat()
-    course = "66a05ab965b68ef11684ebd2"  # ReservationCourses.available の先頭
-
-    def q(params: dict) -> str:
-        return urllib.parse.urlencode(params, doseq=True)
-
-    candidates = [
-        ("available epoch+adult", f"{base}/available?{q({'start_at_epoch': epoch, 'num_people_adult': 2})}"),
-        ("available epoch+adult+course", f"{base}/available?{q({'start_at_epoch': epoch, 'num_people_adult': 2, 'course_ids[]': course})}"),
-        ("timetable start_date+adult", f"{base}/available/timetable?{q({'start_date': date_s, 'num_people_adult': 2})}"),
-        ("timetable reservation[...]", f"{base}/available/timetable?{q({'start_date': date_s, 'reservation[num_people_adult]': 2})}"),
-        (
-            "timetable reservation full",
-            f"{base}/available/timetable?"
-            + q(
-                {
-                    "start_date": date_s,
-                    "reservation[num_people_adult]": 2,
-                    "reservation[num_people_child]": 0,
-                    "reservation[course_ids][]": course,
-                }
-            ),
-        ),
-        ("chain epoch+adult", f"{base}/available/chain?{q({'start_at_epoch': epoch, 'num_people_adult': 2})}"),
-    ]
-    for name, url in candidates:
-        st, body = fetch(url)
-        show(name, url, st, body)
+    if bundles:
+        st, js = fetch(bundles[0], accept="*/*", xhr=False)
+        if st == 200:
+            m = re.search(r"OnlineAvailability=function\(\).{0,12000}?requestData=function", js, re.S)
+            if m:
+                tail = js[m.end() : m.end() + 1500]
+                print(tail)
+            else:
+                m2 = re.search(r"requestData=function\(\)\{[^}]{0,1200}", js)
+                print(m2.group(0) if m2 else "(requestData が見つかりません)")
 
     print("\nprobe done")
 
