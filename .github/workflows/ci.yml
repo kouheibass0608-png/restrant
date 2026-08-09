@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+    paths:
+      - "tablecheck_watcher/**"
+      - "tests/**"
+      - "config.toml"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Live dry-run (TableCheck 実APIとの疎通確認)
+        run: python -m tablecheck_watcher check --dry-run
