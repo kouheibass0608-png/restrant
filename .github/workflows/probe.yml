@@ -1,0 +1,24 @@
+name: probe-tablecheck-api
+
+on:
+  workflow_dispatch:
+    inputs:
+      shop_slug:
+        description: "TableCheck shop slug"
+        required: false
+        default: "joelrobuchon"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run probe
+        run: python scripts/probe_api.py "${{ github.event.inputs.shop_slug || 'joelrobuchon' }}"

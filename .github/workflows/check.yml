@@ -1,0 +1,62 @@
+name: check-availability
+
+on:
+  schedule:
+    # 30分ごと (UTC)。private リポジトリの無料枠 (月2,000分) に収まる間隔。
+    # リポジトリを public にすれば実行時間は無制限になるので */10 などに短縮可。
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行モード"
+        required: false
+        default: "check"
+        type: choice
+        options:
+          - check
+          - dry-run
+          - test-notify
+
+permissions:
+  contents: write
+
+concurrency:
+  group: check-availability
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run checker
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+        run: |
+          MODE="${{ inputs.mode || 'check' }}"
+          case "$MODE" in
+            test-notify) python -m tablecheck_watcher test-notify ;;
+            dry-run)     python -m tablecheck_watcher check --dry-run ;;
+            *)           python -m tablecheck_watcher check ;;
+          esac
+      - name: Persist state
+        if: ${{ github.event_name == 'schedule' || inputs.mode == 'check' }}
+        run: |
+          if [ -n "$(git status --porcelain state.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "chore: update availability state"
+            n=0
+            until git push; do
+              n=$((n+1))
+              [ "$n" -ge 3 ] && exit 1
+              git pull --rebase
+              sleep 2
+            done
+          fi
