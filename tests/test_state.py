@@ -56,6 +56,20 @@ class StateRoundtripTest(unittest.TestCase):
     def test_missing_file_returns_none(self):
         self.assertIsNone(load_state("/nonexistent/state.json"))
 
+    def test_writing_same_state_produces_identical_bytes(self):
+        # 空き状況に変化がない実行で state.json が書き換わらない
+        # (= 余計なコミットが発生しない) ことを保証する。
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "state.json"
+            state = State(
+                availability={"2026-09-02": ["19:00"], "2026-09-01": ["18:30", "18:00"]},
+                last_checked_at="2026-08-09T21:00:00+09:00",
+            )
+            save_state(path, state)
+            first = path.read_bytes()
+            save_state(path, load_state(path))
+            self.assertEqual(path.read_bytes(), first)
+
     def test_corrupt_file_returns_none(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "state.json"

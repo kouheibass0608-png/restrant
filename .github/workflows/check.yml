@@ -2,9 +2,10 @@ name: check-availability
 
 on:
   schedule:
-    # 30分ごと (UTC)。private リポジトリの無料枠 (月2,000分) に収まる間隔。
-    # リポジトリを public にすれば実行時間は無制限になるので */10 などに短縮可。
-    - cron: "*/30 * * * *"
+    # 10分ごと。public リポジトリでは標準ランナーの実行時間が無制限なため
+    # この間隔で運用できる (private の無料枠 月2,000分では超過するので注意)。
+    # cron の下限は5分だが、GitHub 側の遅延で実際の間隔は伸びることがある。
+    - cron: "*/10 * * * *"
   workflow_dispatch:
     inputs:
       mode:

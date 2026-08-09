@@ -17,6 +17,11 @@ WEEKDAYS_JA = ["月", "火", "水", "木", "金", "土", "日"]
 MAX_DATES_IN_MESSAGE = 10
 MAX_TIMES_PER_DATE = 8
 
+# state.json を更新する最低頻度。空き状況に変化がなくても、この間隔で
+# last_checked_at を書き換えてリポジトリに活動を発生させる。
+# GitHub は「60日間活動のない public リポジトリの定期実行を自動停止」するため。
+HEARTBEAT_INTERVAL = dt.timedelta(days=7)
+
 
 def target_dates(cfg: Config, today: dt.date) -> list[str]:
     """監視対象の日付 (YYYY-MM-DD) のリスト。"""
@@ -47,6 +52,20 @@ def filter_availability(
         if kept:
             out[date] = kept
     return out
+
+
+def heartbeat_due(last_checked_at: str, now: dt.datetime) -> bool:
+    """前回記録から HEARTBEAT_INTERVAL 以上経過していれば True。
+
+    記録が無い/壊れている場合も True (書き直して回復させる)。
+    """
+    try:
+        last = dt.datetime.fromisoformat(last_checked_at)
+    except (TypeError, ValueError):
+        return True
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=JST)
+    return now - last >= HEARTBEAT_INTERVAL
 
 
 def format_date_ja(date_s: str) -> str:
@@ -161,13 +180,21 @@ def run(cfg: Config, state_path: str, *, dry_run: bool = False) -> int:
         else:
             print("新規の空きはありません")
 
+    # 毎回 last_checked_at を書き換えると実行のたびに state.json が変化し、
+    # チェック間隔ぶんのコミットが積み上がってしまう。空き状況が変わったとき
+    # (と週1回のハートビート) だけ更新し、それ以外は前回の内容を保つ。
+    if prev is None or avail != prev.availability or heartbeat_due(prev.last_checked_at, now):
+        last_checked_at = now.isoformat()
+    else:
+        last_checked_at = prev.last_checked_at
+
     save_state(
         state_path,
         State(
             availability=avail,
             consecutive_failures=0,
             failure_notified=False,
-            last_checked_at=now.isoformat(),
+            last_checked_at=last_checked_at,
         ),
     )
     return 0
