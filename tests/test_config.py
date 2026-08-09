@@ -12,7 +12,7 @@ slug = "joelrobuchon"
 name = "テスト店"
 
 [search]
-num_people = 4
+num_people = [1, 2]
 time_ranges = ["17:00-22:00"]
 
 [notify.ntfy]
@@ -32,7 +32,7 @@ class LoadConfigTest(unittest.TestCase):
             os.environ.pop("NTFY_TOPIC", None)
             cfg = load_config(self._write(MINIMAL))
         self.assertEqual(cfg.shop_slug, "joelrobuchon")
-        self.assertEqual(cfg.num_people, 4)
+        self.assertEqual(cfg.party_sizes, [1, 2])
         self.assertEqual(cfg.time_ranges, ["17:00-22:00"])
         self.assertEqual(cfg.ntfy.topic, "my-topic")
         self.assertEqual(cfg.ntfy.server, "https://ntfy.sh")
@@ -42,6 +42,21 @@ class LoadConfigTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"NTFY_TOPIC": "env-topic"}):
             cfg = load_config(self._write(MINIMAL))
         self.assertEqual(cfg.ntfy.topic, "env-topic")
+
+    def test_single_int_num_people_is_accepted(self):
+        # 旧来の書き方 (num_people = 2) も引き続き有効
+        cfg = load_config(self._write(MINIMAL.replace("num_people = [1, 2]", "num_people = 2")))
+        self.assertEqual(cfg.party_sizes, [2])
+
+    def test_num_people_is_deduplicated_and_sorted(self):
+        cfg = load_config(self._write(MINIMAL.replace("[1, 2]", "[2, 1, 2]")))
+        self.assertEqual(cfg.party_sizes, [1, 2])
+
+    def test_invalid_num_people_raises(self):
+        for bad in ("[]", "[0]", '["2"]', "[-1]"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ConfigError):
+                    load_config(self._write(MINIMAL.replace("[1, 2]", bad)))
 
     def test_invalid_time_range_raises(self):
         bad = MINIMAL.replace('["17:00-22:00"]', '["1700-2200"]')

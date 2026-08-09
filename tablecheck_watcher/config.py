@@ -24,7 +24,8 @@ class Config:
     shop_slug: str = "joelrobuchon"
     shop_name: str = ""
     locale: str = "ja"
-    num_people: int = 2
+    # 監視する人数。複数指定でき、それぞれ別々に空きを確認する。
+    party_sizes: list[int] = field(default_factory=lambda: [2])
     days_ahead: int = 60
     time_ranges: list[str] = field(default_factory=list)
     dates: list[str] = field(default_factory=list)
@@ -58,7 +59,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         shop_slug=shop.get("slug", "joelrobuchon"),
         shop_name=shop.get("name", ""),
         locale=shop.get("locale", "ja"),
-        num_people=int(search.get("num_people", 2)),
+        party_sizes=_parse_party_sizes(search.get("num_people", [2])),
         days_ahead=int(search.get("days_ahead", 60)),
         time_ranges=list(search.get("time_ranges", [])),
         dates=[str(d) for d in search.get("dates", [])],
@@ -82,6 +83,26 @@ def load_config(path: str | Path = "config.toml") -> Config:
         _parse_range(r)  # 形式チェック (不正なら ConfigError)
 
     return cfg
+
+
+def _parse_party_sizes(raw: object) -> list[int]:
+    """num_people を人数のリストに正規化する。
+
+    単一の整数 (num_people = 2) とリスト (num_people = [1, 2]) の両方を受け付ける。
+    """
+    values = [raw] if isinstance(raw, int) else raw
+    if not isinstance(values, (list, tuple)) or not values:
+        raise ConfigError(
+            f"num_people は人数、または人数のリストで指定してください: {raw!r}"
+        )
+    sizes: list[int] = []
+    for v in values:
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ConfigError(f"num_people に数値以外が含まれています: {v!r}")
+        if v < 1:
+            raise ConfigError(f"num_people は1以上で指定してください: {v}")
+        sizes.append(v)
+    return sorted(set(sizes))
 
 
 def _parse_range(r: str) -> tuple[str, str]:
