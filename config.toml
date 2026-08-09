@@ -1,0 +1,33 @@
+# TableCheck 空席監視の設定
+
+[shop]
+slug = "joelrobuchon"                          # TableCheck の店舗スラッグ
+name = "ガストロノミー ジョエル・ロブション"
+locale = "ja"
+
+[search]
+num_people = 2        # 監視する人数
+days_ahead = 60       # 今日から何日先まで監視するか (TableCheck の予約受付は約2ヶ月先まで)
+# 監視する時間帯。空リスト = 全時間帯。
+# 例: ディナーのみにする場合 → time_ranges = ["17:00-22:00"]
+time_ranges = []
+# 特定の日だけ監視したい場合に日付を列挙。空リスト = days_ahead の全日。
+# 例: dates = ["2026-09-15", "2026-09-22"]
+dates = []
+
+[notify]
+# チェックがこの回数連続で失敗したら、一度だけ警告通知を送る
+# (30分間隔なら 12 回 = 約6時間)
+failure_warning_threshold = 12
+
+[notify.ntfy]
+server = "https://ntfy.sh"
+# topic は秘密情報なのでリポジトリには書かず、環境変数 NTFY_TOPIC で渡す
+# (GitHub Actions では Secrets に設定)。ローカル実行時のみここに書いてもよい。
+topic = ""
+token = ""    # 認証付き ntfy サーバーを使う場合のみ (環境変数 NTFY_TOKEN でも可)
+
+[api]
+base_url = "https://production.tablecheck.com/v2"
+request_timeout = 30      # 秒
+request_interval = 1.0    # 連続リクエスト間の待機秒数 (サーバーへの配慮)

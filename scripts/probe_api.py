@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""TableCheck の予約ウィジェットが使う内部APIを調査するスクリプト (v2)。
+"""TableCheck の予約ウィジェットが使う内部APIを調査するスクリプト (v3)。
 
-GitHub Actions (workflow_dispatch / push) またはローカルPCから実行し、
-どのエンドポイントが有効か・レスポンスの形はどうかをログに出力する。
+www.tablecheck.com の /shops/{slug}/available* エンドポイントの
+正しいリクエストパラメータを特定する。
 
 使い方:
     python scripts/probe_api.py [shop_slug]
@@ -17,17 +17,19 @@ import json
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
+from zoneinfo import ZoneInfo
 
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 
-MAX_BODY_PRINT = 1600
+MAX_BODY_PRINT = 2500
 
 
-def fetch(url: str, accept: str = "application/json", xhr: bool = False) -> tuple[int, str]:
+def fetch(url: str, accept: str = "application/json", xhr: bool = True) -> tuple[int, str]:
     headers = {
         "User-Agent": UA,
         "Accept": accept,
@@ -52,7 +54,7 @@ def fetch(url: str, accept: str = "application/json", xhr: bool = False) -> tupl
         except Exception:
             body = "<body unreadable>"
         return e.code, body
-    except Exception as e:  # DNS, timeout, TLS など
+    except Exception as e:
         return -1, f"<{type(e).__name__}: {e}>"
 
 
@@ -74,92 +76,71 @@ def show(name: str, url: str, status: int, body: str) -> None:
     print(body[:MAX_BODY_PRINT] + ("... (truncated)" if len(body) > MAX_BODY_PRINT else ""))
 
 
-def context_dump(label: str, text: str, needle_re: str, width: int = 220, limit: int = 30) -> None:
-    print(f"\n--- context: {label} (pattern: {needle_re}) ---")
-    count = 0
-    for m in re.finditer(needle_re, text):
-        start = max(0, m.start() - width)
-        end = min(len(text), m.end() + width)
-        snippet = text[start:end].replace("\n", " ")
-        print(f"  [{count}] ...{snippet}...")
-        count += 1
-        if count >= limit:
-            print("  (limit reached)")
-            break
-    if count == 0:
-        print("  (no match)")
-
-
 def main() -> None:
     slug = sys.argv[1] if len(sys.argv) > 1 else "joelrobuchon"
-    today = dt.date.today()
-    date1 = today + dt.timedelta(days=14)
-    t0 = f"{today.isoformat()}T00:00:00.000Z"
+    jst = ZoneInfo("Asia/Tokyo")
+    target_date = (dt.datetime.now(jst) + dt.timedelta(days=14)).date()
+    dinner = dt.datetime.combine(target_date, dt.time(18, 0), tzinfo=jst)
+    epoch = int(dinner.timestamp())
 
-    # 1) 予約ページ本体: インラインscriptの設定値を探す
+    # 1) バンドルから requestData 関数の全体を抽出
     page_url = f"https://www.tablecheck.com/ja/shops/{slug}/reserve"
-    status, html = fetch(page_url, accept="text/html")
-    print(f"=== reserve page ===\nURL: {page_url}\nHTTP {status}  length={len(html)}")
-    inline_scripts = re.findall(r"<script(?![^>]*src)[^>]*>(.*?)</script>", html, re.S)
-    print(f"inline scripts: {len(inline_scripts)}")
-    for i, s in enumerate(inline_scripts):
-        if re.search(r"avail|api|url|token|config", s, re.I):
-            trimmed = re.sub(r"\s+", " ", s.strip())
-            print(f"  inline[{i}] ({len(s)} bytes): {trimmed[:1000]}")
+    status, html = fetch(page_url, accept="text/html", xhr=False)
+    print(f"=== reserve page ===\nHTTP {status}")
 
-    # meta タグ (csrf 等)
-    for m in re.finditer(r'<meta[^>]+(csrf|api)[^>]*>', html, re.I):
-        print(f"  meta: {m.group(0)[:200]}")
-
-    # 2) アプリバンドルから /available 周辺のコードを文脈付きで抽出
-    bundles = [
-        s for s in re.findall(r'<script[^>]+src="([^"]+)"', html) if "tablecheck" in s
+    bundle_urls = [
+        s
+        for s in re.findall(r'<script[^>]+src="([^"]+)"', html)
+        if "assets/table_check/application-" in s
     ]
-    for src in bundles:
-        if src.startswith("//"):
-            src = "https:" + src
-        s, js = fetch(src, accept="*/*")
-        print(f"\n=== bundle {src} -> HTTP {s} ({len(js)} bytes) ===")
-        if s != 200:
-            continue
-        context_dump("available/timetable", js, r"available/timetable")
-        context_dump("available/chain", js, r"available/chain")
-        context_dump("'/available'", js, r"['\"`]/available['\"`]")
-        context_dump("available_request", js, r"available_request")
-        context_dump("production.tablecheck", js, r"production\.tablecheck")
-        context_dump("apiUrl-ish", js, r"api_?[Uu]rl", limit=10)
+    js = ""
+    if bundle_urls:
+        s, js = fetch(bundle_urls[0], accept="*/*", xhr=False)
+        print(f"bundle: {bundle_urls[0]} HTTP {s} ({len(js)} bytes)")
 
-    # 3) 候補エンドポイントを試す
+    def dump_after(label: str, pattern: str, after: int = 2500, before: int = 200) -> None:
+        print(f"\n--- {label} ---")
+        m = re.search(pattern, js)
+        if not m:
+            print("(no match)")
+            return
+        start = max(0, m.start() - before)
+        print(js[start : m.end() + after])
+
+    dump_after("Timetable request (available/timetable)", r"available/timetable")
+    dump_after("OnlineAvailability request ('/available')", r"['\"]/available['\"]")
+    dump_after("startAtEpoch def", r"startAtEpoch\s*=\s*function", after=800)
+
+    # 2) パラメータ候補を試す
+    base = f"https://www.tablecheck.com/ja/shops/{slug}"
+    date_s = target_date.isoformat()
+    course = "66a05ab965b68ef11684ebd2"  # ReservationCourses.available の先頭
+
+    def q(params: dict) -> str:
+        return urllib.parse.urlencode(params, doseq=True)
+
     candidates = [
+        ("available epoch+adult", f"{base}/available?{q({'start_at_epoch': epoch, 'num_people_adult': 2})}"),
+        ("available epoch+adult+course", f"{base}/available?{q({'start_at_epoch': epoch, 'num_people_adult': 2, 'course_ids[]': course})}"),
+        ("timetable start_date+adult", f"{base}/available/timetable?{q({'start_date': date_s, 'num_people_adult': 2})}"),
+        ("timetable reservation[...]", f"{base}/available/timetable?{q({'start_date': date_s, 'reservation[num_people_adult]': 2})}"),
         (
-            "www available/timetable (ja)",
-            f"https://www.tablecheck.com/ja/shops/{slug}/available/timetable"
-            f"?start_at={date1.isoformat()}&num_people=2",
+            "timetable reservation full",
+            f"{base}/available/timetable?"
+            + q(
+                {
+                    "start_date": date_s,
+                    "reservation[num_people_adult]": 2,
+                    "reservation[num_people_child]": 0,
+                    "reservation[course_ids][]": course,
+                }
+            ),
         ),
-        (
-            "www available/timetable (no locale)",
-            f"https://www.tablecheck.com/shops/{slug}/available/timetable"
-            f"?start_at={date1.isoformat()}&num_people=2",
-        ),
-        (
-            "www available (date)",
-            f"https://www.tablecheck.com/ja/shops/{slug}/available"
-            f"?date={date1.isoformat()}&num_people=2",
-        ),
-        (
-            "v2 available",
-            f"https://production.tablecheck.com/v2/shops/{slug}/available"
-            f"?start_at={t0}&num_people=2&locale=ja",
-        ),
-        (
-            "v2 available/timetable",
-            f"https://production.tablecheck.com/v2/shops/{slug}/available/timetable"
-            f"?start_at={t0}&num_people=2&locale=ja",
-        ),
+        ("chain epoch+adult", f"{base}/available/chain?{q({'start_at_epoch': epoch, 'num_people_adult': 2})}"),
     ]
     for name, url in candidates:
-        status, body = fetch(url, xhr=True)
-        show(name, url, status, body)
+        st, body = fetch(url)
+        show(name, url, st, body)
 
     print("\nprobe done")
 
