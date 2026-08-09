@@ -3,9 +3,11 @@ import unittest
 
 from tablecheck_watcher.config import Config
 from tablecheck_watcher.watcher import (
+    JST,
     build_vacancy_message,
     filter_availability,
     format_date_ja,
+    heartbeat_due,
     in_time_ranges,
     reserve_url,
     target_dates,
@@ -96,6 +98,31 @@ class FormattingTest(unittest.TestCase):
         many = {f"2026-09-{d:02d}": ["18:00"] for d in range(1, 15)}
         _, msg, _ = build_vacancy_message(many, cfg)
         self.assertIn("…ほか4日にも空きあり", msg)
+
+
+class HeartbeatDueTest(unittest.TestCase):
+    def setUp(self):
+        self.now = dt.datetime(2026, 8, 9, 21, 0, tzinfo=JST)
+
+    def test_recent_check_is_not_due(self):
+        last = (self.now - dt.timedelta(days=1)).isoformat()
+        self.assertFalse(heartbeat_due(last, self.now))
+
+    def test_old_check_is_due(self):
+        last = (self.now - dt.timedelta(days=8)).isoformat()
+        self.assertTrue(heartbeat_due(last, self.now))
+
+    def test_exactly_seven_days_is_due(self):
+        last = (self.now - dt.timedelta(days=7)).isoformat()
+        self.assertTrue(heartbeat_due(last, self.now))
+
+    def test_missing_or_corrupt_timestamp_is_due(self):
+        self.assertTrue(heartbeat_due("", self.now))
+        self.assertTrue(heartbeat_due("not-a-date", self.now))
+
+    def test_naive_timestamp_is_treated_as_jst(self):
+        last = (self.now - dt.timedelta(days=1)).replace(tzinfo=None).isoformat()
+        self.assertFalse(heartbeat_due(last, self.now))
 
 
 if __name__ == "__main__":
