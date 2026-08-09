@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""TableCheck の予約ウィジェットが使う内部APIを調査するスクリプト。
+"""TableCheck の予約ウィジェットが使う内部APIを調査するスクリプト (v2)。
 
-GitHub Actions (workflow_dispatch) またはローカルPCから実行し、
+GitHub Actions (workflow_dispatch / push) またはローカルPCから実行し、
 どのエンドポイントが有効か・レスポンスの形はどうかをログに出力する。
 
 使い方:
@@ -24,19 +24,19 @@ UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 
-MAX_BODY_PRINT = 1200
+MAX_BODY_PRINT = 1600
 
 
-def fetch(url: str, accept: str = "application/json") -> tuple[int, str]:
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": UA,
-            "Accept": accept,
-            "Accept-Language": "ja,en;q=0.8",
-            "Accept-Encoding": "gzip",
-        },
-    )
+def fetch(url: str, accept: str = "application/json", xhr: bool = False) -> tuple[int, str]:
+    headers = {
+        "User-Agent": UA,
+        "Accept": accept,
+        "Accept-Language": "ja,en;q=0.8",
+        "Accept-Encoding": "gzip",
+    }
+    if xhr:
+        headers["X-Requested-With"] = "XMLHttpRequest"
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read()
@@ -74,79 +74,92 @@ def show(name: str, url: str, status: int, body: str) -> None:
     print(body[:MAX_BODY_PRINT] + ("... (truncated)" if len(body) > MAX_BODY_PRINT else ""))
 
 
+def context_dump(label: str, text: str, needle_re: str, width: int = 220, limit: int = 30) -> None:
+    print(f"\n--- context: {label} (pattern: {needle_re}) ---")
+    count = 0
+    for m in re.finditer(needle_re, text):
+        start = max(0, m.start() - width)
+        end = min(len(text), m.end() + width)
+        snippet = text[start:end].replace("\n", " ")
+        print(f"  [{count}] ...{snippet}...")
+        count += 1
+        if count >= limit:
+            print("  (limit reached)")
+            break
+    if count == 0:
+        print("  (no match)")
+
+
 def main() -> None:
     slug = sys.argv[1] if len(sys.argv) > 1 else "joelrobuchon"
     today = dt.date.today()
-    end = today + dt.timedelta(days=60)
+    date1 = today + dt.timedelta(days=14)
     t0 = f"{today.isoformat()}T00:00:00.000Z"
-    t1 = f"{end.isoformat()}T23:59:59.000Z"
 
-    candidates = [
-        ("shop_info(production)", f"https://production.tablecheck.com/v2/shops/{slug}?locale=ja"),
-        (
-            "availability_calendar",
-            f"https://production.tablecheck.com/v2/shops/{slug}/availability_calendar"
-            f"?start_at={t0}&end_at={t1}&num_people=2&locale=ja",
-        ),
-        (
-            "availability_calendar(min)",
-            f"https://production.tablecheck.com/v2/shops/{slug}/availability_calendar?num_people=2",
-        ),
-        (
-            "availability(date)",
-            f"https://production.tablecheck.com/v2/shops/{slug}/availability"
-            f"?date={today.isoformat()}&num_people=2&locale=ja",
-        ),
-        (
-            "availability(start/end)",
-            f"https://production.tablecheck.com/v2/shops/{slug}/availability"
-            f"?start_at={t0}&end_at={t1}&num_people=2&locale=ja",
-        ),
-        (
-            "availability_days",
-            f"https://production.tablecheck.com/v2/shops/{slug}/availability_days"
-            f"?start_at={t0}&num_people=2&locale=ja",
-        ),
-        ("shop_info(api-host)", f"https://api.tablecheck.com/v2/shops/{slug}"),
-    ]
-
-    for name, url in candidates:
-        status, body = fetch(url)
-        show(name, url, status, body)
-
-    # 予約ページ本体から JS バンドルを取り出し、API パスの文字列を探す
+    # 1) 予約ページ本体: インラインscriptの設定値を探す
     page_url = f"https://www.tablecheck.com/ja/shops/{slug}/reserve"
     status, html = fetch(page_url, accept="text/html")
-    print(f"\n=== reserve page ===\nURL: {page_url}\nHTTP {status}  length={len(html)}")
+    print(f"=== reserve page ===\nURL: {page_url}\nHTTP {status}  length={len(html)}")
+    inline_scripts = re.findall(r"<script(?![^>]*src)[^>]*>(.*?)</script>", html, re.S)
+    print(f"inline scripts: {len(inline_scripts)}")
+    for i, s in enumerate(inline_scripts):
+        if re.search(r"avail|api|url|token|config", s, re.I):
+            trimmed = re.sub(r"\s+", " ", s.strip())
+            print(f"  inline[{i}] ({len(s)} bytes): {trimmed[:1000]}")
 
-    scripts = re.findall(r'<script[^>]+src="([^"]+)"', html)
-    print(f"script tags: {len(scripts)}")
-    seen: set[str] = set()
-    for src in scripts[:20]:
+    # meta タグ (csrf 等)
+    for m in re.finditer(r'<meta[^>]+(csrf|api)[^>]*>', html, re.I):
+        print(f"  meta: {m.group(0)[:200]}")
+
+    # 2) アプリバンドルから /available 周辺のコードを文脈付きで抽出
+    bundles = [
+        s for s in re.findall(r'<script[^>]+src="([^"]+)"', html) if "tablecheck" in s
+    ]
+    for src in bundles:
         if src.startswith("//"):
             src = "https:" + src
-        elif src.startswith("/"):
-            src = "https://www.tablecheck.com" + src
         s, js = fetch(src, accept="*/*")
+        print(f"\n=== bundle {src} -> HTTP {s} ({len(js)} bytes) ===")
         if s != 200:
-            print(f"  bundle {src}: HTTP {s}")
             continue
-        hits = set()
-        hits.update(re.findall(r'https?://[a-z0-9.\-]*tablecheck[a-z0-9.\-]*/[A-Za-z0-9_/${}.\-]*', js))
-        hits.update(re.findall(r'["`\'](/?v2/[A-Za-z0-9_/${}.\-]{2,80})["`\']', js))
-        hits.update(re.findall(r'["`\']([A-Za-z0-9_/${}.\-]*availab[A-Za-z0-9_/${}.\-]*)["`\']', js))
-        new = sorted(h for h in hits if h not in seen)
-        seen.update(new)
-        if new:
-            print(f"  bundle {src} ({len(js)} bytes):")
-            for h in new[:60]:
-                print(f"    {h}")
+        context_dump("available/timetable", js, r"available/timetable")
+        context_dump("available/chain", js, r"available/chain")
+        context_dump("'/available'", js, r"['\"`]/available['\"`]")
+        context_dump("available_request", js, r"available_request")
+        context_dump("production.tablecheck", js, r"production\.tablecheck")
+        context_dump("apiUrl-ish", js, r"api_?[Uu]rl", limit=10)
 
-    # ページ内に埋め込まれた設定 JSON (API ホスト等) も探す
-    for m in re.finditer(r'https?://[a-z0-9.\-]*tablecheck[a-z0-9.\-]*[A-Za-z0-9_/.\-]*', html):
-        u = m.group(0)
-        if "/v2/" in u or "api" in u or "production" in u:
-            print(f"  page url ref: {u}")
+    # 3) 候補エンドポイントを試す
+    candidates = [
+        (
+            "www available/timetable (ja)",
+            f"https://www.tablecheck.com/ja/shops/{slug}/available/timetable"
+            f"?start_at={date1.isoformat()}&num_people=2",
+        ),
+        (
+            "www available/timetable (no locale)",
+            f"https://www.tablecheck.com/shops/{slug}/available/timetable"
+            f"?start_at={date1.isoformat()}&num_people=2",
+        ),
+        (
+            "www available (date)",
+            f"https://www.tablecheck.com/ja/shops/{slug}/available"
+            f"?date={date1.isoformat()}&num_people=2",
+        ),
+        (
+            "v2 available",
+            f"https://production.tablecheck.com/v2/shops/{slug}/available"
+            f"?start_at={t0}&num_people=2&locale=ja",
+        ),
+        (
+            "v2 available/timetable",
+            f"https://production.tablecheck.com/v2/shops/{slug}/available/timetable"
+            f"?start_at={t0}&num_people=2&locale=ja",
+        ),
+    ]
+    for name, url in candidates:
+        status, body = fetch(url, xhr=True)
+        show(name, url, status, body)
 
     print("\nprobe done")
 
