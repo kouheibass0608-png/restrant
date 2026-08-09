@@ -109,11 +109,13 @@ class TableCheckClient:
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             raise TableCheckError(f"JSONを解析できません: {raw[:200]!r}") from e
 
-    def fetch_timetable(self, start_date: str) -> tuple[str, dict[str, list[str]]]:
+    def fetch_timetable(
+        self, start_date: str, num_people: int
+    ) -> tuple[str, dict[str, list[str]]]:
         """start_date からの1週間分の空き状況を取得する。"""
         params = {
             "reservation[start_date]": start_date,
-            "reservation[num_people_adult]": self.cfg.num_people,
+            "reservation[num_people_adult]": num_people,
             "reservation[num_people_child]": 0,
         }
         url = (
@@ -122,8 +124,8 @@ class TableCheckClient:
         )
         return parse_timetable_response(self._get_json(url))
 
-    def fetch_availability(self, dates: list[str]) -> dict[str, list[str]]:
-        """対象日付リストをカバーする範囲の空き状況を取得する。
+    def fetch_availability(self, dates: list[str], num_people: int) -> dict[str, list[str]]:
+        """指定人数について、対象日付をカバーする範囲の空き状況を取得する。
 
         週単位のレスポンスを、最終対象日をカバーするまでページングする。
         返り値は {日付: [空き時刻]} (空きのある日のみ)。
@@ -138,7 +140,7 @@ class TableCheckClient:
         for i in range(MAX_REQUESTS_PER_CHECK):
             if i > 0 and self.cfg.request_interval > 0:
                 time.sleep(self.cfg.request_interval)
-            queried, window = self.fetch_timetable(cursor)
+            queried, window = self.fetch_timetable(cursor, num_people)
             if queried in seen_queried or not window:
                 break  # 進展なし (予約可能範囲の終端に達した)
             seen_queried.add(queried)
