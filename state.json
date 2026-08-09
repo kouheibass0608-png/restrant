@@ -1,6 +1,8 @@
 {
- "availability": {},
+ "availability": {
+  "2": {}
+ },
  "consecutive_failures": 0,
  "failure_notified": false,
- "last_checked_at": "2026-08-10T01:29:51.815219+09:00"
+ "last_checked_at": "2026-08-10T02:42:39.639620+09:00"
 }
