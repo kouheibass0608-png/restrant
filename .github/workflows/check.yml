@@ -22,6 +22,7 @@ on:
           - check
           - dry-run
           - test-notify
+          - loop-test # 監視ループを短縮設定 (1分間隔 x 3分) で動作確認する
 
 env:
   CHECK_INTERVAL: 300 # チェック間隔 (秒)
@@ -67,11 +68,17 @@ jobs:
           "${GITHUB_WORKSPACE}/scripts/persist_state.sh"
 
       - name: Watch (loop until the next scheduled run takes over)
-        if: ${{ github.event_name == 'schedule' }}
+        if: ${{ github.event_name == 'schedule' || inputs.mode == 'loop-test' }}
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
         run: |
+          if [ "${{ inputs.mode }}" = "loop-test" ]; then
+            # 動作確認用: 本番と同じ経路を短時間で回す
+            CHECK_INTERVAL=60
+            LOOP_MINUTES=3
+            echo "loop-test: ${CHECK_INTERVAL}秒間隔 / ${LOOP_MINUTES}分間"
+          fi
           deadline=$(( $(date +%s) + LOOP_MINUTES * 60 ))
           n=0
           while :; do
