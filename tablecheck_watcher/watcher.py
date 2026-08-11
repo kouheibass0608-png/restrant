@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import datetime as dt
 import json
 from zoneinfo import ZoneInfo
@@ -27,7 +28,15 @@ def target_dates(cfg: Config, today: dt.date) -> list[str]:
     """監視対象の日付 (YYYY-MM-DD) のリスト。"""
     if cfg.dates:
         return sorted(d for d in cfg.dates if d >= today.isoformat())
-    return [(today + dt.timedelta(days=i)).isoformat() for i in range(cfg.days_ahead + 1)]
+    if cfg.months_ahead_end is not None:
+        month_index = today.year * 12 + today.month - 1 + cfg.months_ahead_end
+        end_year, zero_based_month = divmod(month_index, 12)
+        end_month = zero_based_month + 1
+        end = dt.date(end_year, end_month, calendar.monthrange(end_year, end_month)[1])
+    else:
+        end = today + dt.timedelta(days=cfg.days_ahead)
+    span = (end - today).days
+    return [(today + dt.timedelta(days=i)).isoformat() for i in range(span + 1)]
 
 
 def in_time_ranges(hhmm: str, ranges: list[str]) -> bool:

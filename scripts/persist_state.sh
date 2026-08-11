@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# state.json に変化があればコミットして push する。
+# 各店舗の state ファイルに変化があればまとめてコミットして push する。
 # 監視ループから毎回呼ばれるため、変化が無いときは何もしない。
 set -uo pipefail
 
 cd "${GITHUB_WORKSPACE:-.}" || exit 1
 
-[ -n "$(git status --porcelain state.json)" ] || exit 0
+state_files=(state.json state.losier.json)
+
+[ -n "$(git status --porcelain -- "${state_files[@]}")" ] || exit 0
 
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-git add state.json
+git add -- "${state_files[@]}"
 git commit -m "chore: update availability state" || exit 0
 
 # 他の実行が先に push している場合があるので、rebase して数回リトライする。

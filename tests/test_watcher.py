@@ -48,6 +48,18 @@ class TargetDatesTest(unittest.TestCase):
         today = dt.date(2026, 8, 9)
         self.assertEqual(target_dates(cfg, today), ["2026-09-15"])
 
+    def test_months_ahead_end_uses_target_month_end(self):
+        cfg = Config(days_ahead=1, months_ahead_end=3)
+        today = dt.date(2026, 8, 11)
+        dates = target_dates(cfg, today)
+        self.assertEqual(dates[0], "2026-08-11")
+        self.assertEqual(dates[-1], "2026-11-30")
+
+    def test_months_ahead_end_crosses_year(self):
+        cfg = Config(months_ahead_end=3)
+        dates = target_dates(cfg, dt.date(2026, 11, 20))
+        self.assertEqual(dates[-1], "2027-02-28")
+
 
 class FilterAvailabilityTest(unittest.TestCase):
     def test_filters_by_date_and_time(self):

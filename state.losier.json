@@ -1,0 +1,8 @@
+{
+ "availability": {
+  "2": {}
+ },
+ "consecutive_failures": 0,
+ "failure_notified": false,
+ "last_checked_at": ""
+}
