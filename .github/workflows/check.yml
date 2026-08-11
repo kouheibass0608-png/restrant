@@ -2,14 +2,19 @@ name: check-availability
 
 on:
   schedule:
-    # 10分ごと。public リポジトリでは標準ランナーの実行時間が無制限なため
-    # この間隔で運用できる (private の無料枠 月2,000分では超過するので注意)。
-    # cron の下限は5分だが、GitHub 側の遅延で実際の間隔は伸びることがある。
-    - cron: "*/10 * * * *"
+    # GitHub の cron は混雑時に大きく遅延する。実測では "*/10" を指定しても
+    # 発火間隔は平均約1時間 (最短26分・最長2時間18分) だった。
+    # そのため cron は毎時1回だけにし、1回の実行の中でループして
+    # CHECK_INTERVAL ごとにチェックする。これが実質的な監視間隔になる。
+    #
+    # ループ長 (LOOP_MINUTES) を cron 周期より長くとってあるのは、
+    # 次回の発火が遅延しても監視が途切れないようにするため。
+    # 発火が重なった時点で concurrency により古い実行が置き換わる。
+    - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
       mode:
-        description: "実行モード"
+        description: "実行モード (手動実行は1回だけ実行し、ループしません)"
         required: false
         default: "check"
         type: choice
@@ -18,46 +23,67 @@ on:
           - dry-run
           - test-notify
 
+env:
+  CHECK_INTERVAL: 300 # チェック間隔 (秒)
+  LOOP_MINUTES: 110 # 1回の実行がチェックを続ける時間 (分)
+
 permissions:
   contents: write
 
 concurrency:
-  group: check-availability
-  cancel-in-progress: false
+  # 定期実行どうしだけを置き換える。手動実行 (テスト通知など) が
+  # 監視ループを止めてしまわないよう、イベント種別でグループを分ける。
+  group: check-availability-${{ github.event_name }}
+  cancel-in-progress: true
 
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Run checker
+
+      - name: Test notification
+        if: ${{ inputs.mode == 'test-notify' }}
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+        run: python -m tablecheck_watcher test-notify
+
+      - name: Dry run
+        if: ${{ inputs.mode == 'dry-run' }}
+        run: python -m tablecheck_watcher check --dry-run
+
+      - name: Check once
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'check' }}
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
         run: |
-          MODE="${{ inputs.mode || 'check' }}"
-          case "$MODE" in
-            test-notify) python -m tablecheck_watcher test-notify ;;
-            dry-run)     python -m tablecheck_watcher check --dry-run ;;
-            *)           python -m tablecheck_watcher check ;;
-          esac
-      - name: Persist state
-        if: ${{ github.event_name == 'schedule' || inputs.mode == 'check' }}
+          python -m tablecheck_watcher check
+          "${GITHUB_WORKSPACE}/scripts/persist_state.sh"
+
+      - name: Watch (loop until the next scheduled run takes over)
+        if: ${{ github.event_name == 'schedule' }}
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
         run: |
-          if [ -n "$(git status --porcelain state.json)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add state.json
-            git commit -m "chore: update availability state"
-            n=0
-            until git push; do
-              n=$((n+1))
-              [ "$n" -ge 3 ] && exit 1
-              git pull --rebase
-              sleep 2
-            done
-          fi
+          deadline=$(( $(date +%s) + LOOP_MINUTES * 60 ))
+          n=0
+          while :; do
+            n=$((n + 1))
+            echo "--- check #${n} $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S JST') ---"
+            # チェックが落ちてもループは続ける (次の回で回復する可能性があるため)。
+            # 連続失敗が続いた場合は watcher 側が警告通知を出す。
+            python -m tablecheck_watcher check || echo "::warning::check failed (継続します)"
+            "${GITHUB_WORKSPACE}/scripts/persist_state.sh"
+            if [ $(( $(date +%s) + CHECK_INTERVAL )) -ge "$deadline" ]; then
+              echo "ループ終了 (${n}回チェック)。次の定期実行に引き継ぎます。"
+              break
+            fi
+            sleep "$CHECK_INTERVAL"
+          done
