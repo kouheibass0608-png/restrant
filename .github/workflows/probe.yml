@@ -1,12 +1,20 @@
-name: probe-tablecheck-api
+name: probe-reservation-site
 
 on:
   workflow_dispatch:
     inputs:
-      shop_slug:
-        description: "TableCheck shop slug"
+      site:
+        description: "調査対象の予約サイト"
         required: false
-        default: "joelrobuchon"
+        default: "tablecheck"
+        type: choice
+        options:
+          - tablecheck
+          - omakase
+      target:
+        description: "店舗の識別子 (TableCheck: slug / OMAKASE: restaurant id)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -20,5 +28,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Run probe
-        run: python scripts/probe_api.py "${{ github.event.inputs.shop_slug || 'joelrobuchon' }}"
+
+      - name: Probe TableCheck
+        if: ${{ inputs.site != 'omakase' }}
+        run: python scripts/probe_api.py "${{ inputs.target || 'joelrobuchon' }}"
+
+      - name: Probe OMAKASE
+        if: ${{ inputs.site == 'omakase' }}
+        run: python scripts/probe_omakase.py "${{ inputs.target || 'qt951856' }}"
