@@ -27,6 +27,8 @@ class Config:
     # 監視する人数。複数指定でき、それぞれ別々に空きを確認する。
     party_sizes: list[int] = field(default_factory=lambda: [2])
     days_ahead: int = 60
+    # 指定した場合、days_ahead より優先し「Nか月先の月末」まで監視する。
+    months_ahead_end: int | None = None
     time_ranges: list[str] = field(default_factory=list)
     dates: list[str] = field(default_factory=list)
     failure_warning_threshold: int = 12
@@ -61,6 +63,9 @@ def load_config(path: str | Path = "config.toml") -> Config:
         locale=shop.get("locale", "ja"),
         party_sizes=_parse_party_sizes(search.get("num_people", [2])),
         days_ahead=int(search.get("days_ahead", 60)),
+        months_ahead_end=_parse_optional_nonnegative_int(
+            search.get("months_ahead_end"), "months_ahead_end"
+        ),
         time_ranges=list(search.get("time_ranges", [])),
         dates=[str(d) for d in search.get("dates", [])],
         failure_warning_threshold=int(notify.get("failure_warning_threshold", 12)),
@@ -83,6 +88,14 @@ def load_config(path: str | Path = "config.toml") -> Config:
         _parse_range(r)  # 形式チェック (不正なら ConfigError)
 
     return cfg
+
+
+def _parse_optional_nonnegative_int(raw: object, name: str) -> int | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise ConfigError(f"{name} は0以上の整数で指定してください: {raw!r}")
+    return raw
 
 
 def _parse_party_sizes(raw: object) -> list[int]:

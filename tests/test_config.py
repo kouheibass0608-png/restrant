@@ -22,8 +22,9 @@ topic = "my-topic"
 
 class LoadConfigTest(unittest.TestCase):
     def _write(self, content: str) -> Path:
-        d = tempfile.mkdtemp()
-        path = Path(d) / "config.toml"
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        path = Path(d.name) / "config.toml"
         path.write_text(content, encoding="utf-8")
         return path
 
@@ -74,6 +75,24 @@ class LoadConfigTest(unittest.TestCase):
             cfg.reserve_page_url,
             "https://www.tablecheck.com/ja/shops/joelrobuchon/reserve",
         )
+
+    def test_months_ahead_end(self):
+        cfg = load_config(
+            self._write(
+                MINIMAL.replace(
+                    "num_people = [1, 2]",
+                    "months_ahead_end = 3\nnum_people = [1, 2]",
+                )
+            )
+        )
+        self.assertEqual(cfg.months_ahead_end, 3)
+
+    def test_invalid_months_ahead_end_raises(self):
+        bad = MINIMAL.replace(
+            "num_people = [1, 2]", 'months_ahead_end = "3"\nnum_people = [1, 2]'
+        )
+        with self.assertRaises(ConfigError):
+            load_config(self._write(bad))
 
 
 if __name__ == "__main__":

@@ -39,8 +39,9 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 
-# fetch_availability 1回あたりのリクエスト数の上限 (暴走防止)
-MAX_REQUESTS_PER_CHECK = 12
+# fetch_availability 1店舗・1人数あたりのリクエスト数の上限 (暴走防止)。
+# 1リクエスト約1週間分のため、20回で「3か月先の月末」までカバーできる。
+MAX_REQUESTS_PER_CHECK = 20
 
 
 class TableCheckError(Exception):

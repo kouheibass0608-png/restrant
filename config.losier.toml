@@ -1,0 +1,28 @@
+# ロオジエのTableCheck空席監視設定
+
+[shop]
+slug = "shiseido-losier"
+name = "ロオジエ"
+locale = "ja"
+
+[search]
+# WEB予約は2〜4名。今回は既存のロブション監視と同じ2名を対象にする。
+num_people = [2]
+# 公式の受付期間「当月から向こう3か月先の月末まで」に合わせる。
+months_ahead_end = 3
+# 空リスト = ランチ・ディナーの全時間帯。
+time_ranges = []
+dates = []
+
+[notify]
+failure_warning_threshold = 12
+
+[notify.ntfy]
+server = "https://ntfy.sh"
+topic = ""
+token = ""
+
+[api]
+base_url = "https://production.tablecheck.com/v2"
+request_timeout = 30
+request_interval = 1.0
