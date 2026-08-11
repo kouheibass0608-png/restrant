@@ -1,9 +1,9 @@
-name: check-robuchon
+name: check-losier
 
 on:
   schedule:
-    # GitHub cron の遅延を補うため、毎時起動してジョブ内で5分ごとに確認する。
-    - cron: "0 * * * *"
+    # ロブションの5分境界を避け、ジョブ内では15分ごとに確認する。
+    - cron: "2 * * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -18,7 +18,7 @@ on:
           - loop-test
 
 env:
-  CHECK_INTERVAL: 300 # 通常時は5分間隔
+  CHECK_INTERVAL: 900 # 通常時は15分間隔
   RATE_LIMIT_BACKOFF: 1800 # HTTP 429時は30分休止
   LOOP_MINUTES: 110
 
@@ -26,8 +26,7 @@ permissions:
   contents: write
 
 concurrency:
-  # 旧combinedワークフローと同じグループ名を維持し、次回起動時に旧実行を停止する。
-  group: check-availability-${{ github.event_name }}
+  group: check-losier-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
@@ -45,11 +44,15 @@ jobs:
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
-        run: python -m tablecheck_watcher test-notify --config config.toml --state state.json
+        run: >-
+          python -m tablecheck_watcher test-notify
+          --config config.losier.toml --state state.losier.json
 
       - name: Dry run
         if: ${{ inputs.mode == 'dry-run' }}
-        run: python -m tablecheck_watcher check --dry-run --config config.toml --state state.json
+        run: >-
+          python -m tablecheck_watcher check --dry-run
+          --config config.losier.toml --state state.losier.json
 
       - name: Check once
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'check' }}
@@ -58,11 +61,11 @@ jobs:
           NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
         run: |
           status=0
-          python -m tablecheck_watcher check --config config.toml --state state.json || status=$?
-          "${GITHUB_WORKSPACE}/scripts/persist_state.sh" state.json
+          python -m tablecheck_watcher check --config config.losier.toml --state state.losier.json || status=$?
+          "${GITHUB_WORKSPACE}/scripts/persist_state.sh" state.losier.json
           exit "$status"
 
-      - name: Watch Robuchon
+      - name: Watch L'Osier
         if: ${{ github.event_name == 'schedule' || inputs.mode == 'loop-test' }}
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
@@ -77,9 +80,9 @@ jobs:
           n=0
           while :; do
             n=$((n + 1))
-            echo "--- Robuchon check #${n} $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S JST') ---"
+            echo "--- L'Osier check #${n} $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S JST') ---"
             status=0
-            if python -m tablecheck_watcher check --config config.toml --state state.json; then
+            if python -m tablecheck_watcher check --config config.losier.toml --state state.losier.json; then
               :
             else
               status=$?
@@ -93,7 +96,7 @@ jobs:
               echo "::warning::check failed (status=${status}; 継続します)"
             fi
 
-            "${GITHUB_WORKSPACE}/scripts/persist_state.sh" state.json
+            "${GITHUB_WORKSPACE}/scripts/persist_state.sh" state.losier.json
             if [ $(( $(date +%s) + delay )) -ge "$deadline" ]; then
               echo "ループ終了 (${n}回チェック)。次の定期実行に引き継ぎます。"
               break

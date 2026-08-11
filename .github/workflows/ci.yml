@@ -7,6 +7,8 @@ on:
       - "tests/**"
       - "config*.toml"
       - "scripts/check_all.sh"
+      - "scripts/persist_state.sh"
+      - ".github/workflows/check*.yml"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
 
@@ -25,4 +27,5 @@ jobs:
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Live dry-run (TableCheck 実APIとの疎通確認)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         run: scripts/check_all.sh dry-run

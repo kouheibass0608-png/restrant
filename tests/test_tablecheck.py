@@ -1,10 +1,13 @@
 import unittest
+import urllib.error
+from email.message import Message
 from unittest import mock
 
 from tablecheck_watcher.config import Config
 from tablecheck_watcher.tablecheck import (
     TableCheckClient,
     TableCheckError,
+    TableCheckRateLimitError,
     parse_timetable_response,
     seconds_to_hhmm,
 )
@@ -105,6 +108,25 @@ class FetchAvailabilityTest(unittest.TestCase):
         self.assertEqual(result, {})
         self.assertEqual(fetch.call_count, 16)
         self.assertEqual(fetch.call_args_list[-1].args[0], "2026-11-24")
+
+
+class HttpErrorTest(unittest.TestCase):
+    def test_http_429_has_a_distinct_error_type(self):
+        headers = Message()
+        headers["Retry-After"] = "120"
+        error = urllib.error.HTTPError(
+            "https://example.test", 429, "Too Many Requests", headers, None
+        )
+        client = TableCheckClient(Config())
+
+        with mock.patch(
+            "tablecheck_watcher.tablecheck.urllib.request.urlopen", side_effect=error
+        ):
+            with self.assertRaises(TableCheckRateLimitError) as ctx:
+                client._get_json("https://example.test")
+
+        self.assertIn("HTTP 429", str(ctx.exception))
+        self.assertIn("Retry-After: 120秒", str(ctx.exception))
 
 
 if __name__ == "__main__":
