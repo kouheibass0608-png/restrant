@@ -2,7 +2,7 @@
  "availability": {
   "2": {}
  },
- "consecutive_failures": 16,
+ "consecutive_failures": 17,
  "failure_notified": true,
- "last_checked_at": "2026-08-12T03:39:31.973148+09:00"
+ "last_checked_at": "2026-08-12T03:44:34.639376+09:00"
 }
