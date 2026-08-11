@@ -134,25 +134,33 @@ class TableCheckClient:
         if not dates:
             return {}
         last = max(dates)
+        last_date = dt.date.fromisoformat(last)
         cursor = min(dates)
         result: dict[str, list[str]] = {}
-        seen_queried: set[str] = set()
 
         for i in range(MAX_REQUESTS_PER_CHECK):
             if i > 0 and self.cfg.request_interval > 0:
                 time.sleep(self.cfg.request_interval)
-            queried, window = self.fetch_timetable(cursor, num_people)
-            if queried in seen_queried or not window:
-                break  # 進展なし (予約可能範囲の終端に達した)
-            seen_queried.add(queried)
+            _, window = self.fetch_timetable(cursor, num_people)
             for date, times in window.items():
                 if times:
                     result[date] = times
-            max_date = max(window)
-            if max_date >= last:
+
+            if window:
+                covered_through = max(window)
+                if covered_through >= last:
+                    break
+                next_date = dt.date.fromisoformat(covered_through) + dt.timedelta(days=1)
+            else:
+                # 休業期間などでは slots 自体が空になることがある。
+                # 予約受付期間の終端とは限らないため、次週へ進んで探索を続ける。
+                next_date = dt.date.fromisoformat(cursor) + dt.timedelta(days=7)
+
+            cursor_date = dt.date.fromisoformat(cursor)
+            if next_date <= cursor_date:
+                # APIが要求日より過去のウィンドウを返しても必ず前進させる。
+                next_date = cursor_date + dt.timedelta(days=7)
+            if next_date > last_date:
                 break
-            next_cursor = (dt.date.fromisoformat(max_date) + dt.timedelta(days=1)).isoformat()
-            if next_cursor <= cursor:
-                break
-            cursor = next_cursor
+            cursor = next_date.isoformat()
         return result
