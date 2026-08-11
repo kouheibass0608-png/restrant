@@ -10,7 +10,7 @@
    ]
   }
  },
- "consecutive_failures": 3,
+ "consecutive_failures": 0,
  "failure_notified": false,
  "last_checked_at": "2026-08-12T02:28:57.443512+09:00"
 }
