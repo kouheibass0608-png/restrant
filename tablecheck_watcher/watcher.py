@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from .config import Config
 from .notify import send_ntfy
 from .state import Availability, State, diff_new_slots, load_state, save_state
-from .tablecheck import TableCheckClient, TableCheckError
+from .tablecheck import TableCheckClient, TableCheckError, TableCheckRateLimitError
 
 JST = ZoneInfo("Asia/Tokyo")
 WEEKDAYS_JA = ["月", "火", "水", "木", "金", "土", "日"]
@@ -22,6 +22,10 @@ MAX_TIMES_PER_DATE = 8
 # last_checked_at を書き換えてリポジトリに活動を発生させる。
 # GitHub は「60日間活動のない public リポジトリの定期実行を自動停止」するため。
 HEARTBEAT_INTERVAL = dt.timedelta(days=7)
+
+# sysexits.h の EX_TEMPFAIL。GitHub Actions はこの終了コードを受けると
+# 通常間隔では再試行せず、ワークフロー側で30分のバックオフを行う。
+RATE_LIMIT_EXIT_CODE = 75
 
 
 def target_dates(cfg: Config, today: dt.date) -> list[str]:
@@ -180,7 +184,7 @@ def run(cfg: Config, state_path: str, *, dry_run: bool = False) -> int:
             )
             state.failure_notified = True
         save_state(state_path, state)
-        return 0
+        return RATE_LIMIT_EXIT_CODE if isinstance(e, TableCheckRateLimitError) else 0
 
     for size in cfg.party_sizes:
         days = avail[size]

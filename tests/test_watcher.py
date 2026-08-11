@@ -1,7 +1,13 @@
 import datetime as dt
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
+from tablecheck_watcher import watcher
 from tablecheck_watcher.config import Config
+from tablecheck_watcher.state import load_state
+from tablecheck_watcher.tablecheck import TableCheckRateLimitError
 from tablecheck_watcher.watcher import (
     JST,
     build_vacancy_message,
@@ -156,6 +162,23 @@ class HeartbeatDueTest(unittest.TestCase):
     def test_naive_timestamp_is_treated_as_jst(self):
         last = (self.now - dt.timedelta(days=1)).replace(tzinfo=None).isoformat()
         self.assertFalse(heartbeat_due(last, self.now))
+
+
+class RateLimitTest(unittest.TestCase):
+    def test_run_returns_tempfail_and_persists_failure(self):
+        cfg = Config(request_interval=0, failure_warning_threshold=12)
+        with tempfile.TemporaryDirectory() as d:
+            state_path = str(Path(d) / "state.json")
+            with mock.patch(
+                "tablecheck_watcher.watcher.TableCheckClient.fetch_availability",
+                side_effect=TableCheckRateLimitError("HTTP 429"),
+            ):
+                result = watcher.run(cfg, state_path)
+
+            self.assertEqual(result, watcher.RATE_LIMIT_EXIT_CODE)
+            state = load_state(state_path)
+            self.assertIsNotNone(state)
+            self.assertEqual(state.consecutive_failures, 1)
 
 
 if __name__ == "__main__":

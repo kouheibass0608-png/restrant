@@ -15,6 +15,7 @@ time_ranges = []
 dates = []
 
 [notify]
+# HTTP 429で30分バックオフ中なら 12 回 = 約6時間。
 failure_warning_threshold = 12
 
 [notify.ntfy]

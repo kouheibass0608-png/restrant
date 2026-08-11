@@ -48,6 +48,10 @@ class TableCheckError(Exception):
     pass
 
 
+class TableCheckRateLimitError(TableCheckError):
+    pass
+
+
 def seconds_to_hhmm(seconds: int) -> str:
     return f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}"
 
@@ -100,6 +104,10 @@ class TableCheckClient:
                 if resp.headers.get("Content-Encoding") == "gzip":
                     raw = gzip.GzipFile(fileobj=io.BytesIO(raw)).read()
         except urllib.error.HTTPError as e:
+            if e.code == 429:
+                retry_after = e.headers.get("Retry-After") if e.headers else None
+                detail = f" (Retry-After: {retry_after}秒)" if retry_after else ""
+                raise TableCheckRateLimitError(f"HTTP 429{detail}: {url}") from e
             raise TableCheckError(f"HTTP {e.code}: {url}") from e
         except urllib.error.URLError as e:
             raise TableCheckError(f"接続エラー: {e.reason}") from e

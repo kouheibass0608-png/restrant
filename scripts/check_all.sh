@@ -31,7 +31,13 @@ for shop in "${shops[@]}"; do
   config="${shop%%:*}"
   state="${shop#*:}"
   echo "=== ${config} ==="
-  python -m tablecheck_watcher "${command_args[@]}" --config "$config" --state "$state" || status=$?
+  if python -m tablecheck_watcher "${command_args[@]}" --config "$config" --state "$state"; then
+    continue
+  else
+    status=$?
+  fi
+  # 429時は同じ実行元から次の店舗へアクセスせず、呼び出し側にバックオフを促す。
+  [ "$status" -eq 75 ] && break
 done
 
 exit "$status"
