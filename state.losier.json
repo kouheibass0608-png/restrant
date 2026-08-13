@@ -1,8 +1,12 @@
 {
  "availability": {
-  "2": {}
+  "2": {
+   "2026-08-22": [
+    "18:30"
+   ]
+  }
  },
  "consecutive_failures": 0,
  "failure_notified": false,
- "last_checked_at": "2026-08-12T15:52:34.945652+09:00"
+ "last_checked_at": "2026-08-13T12:23:10.527885+09:00"
 }
