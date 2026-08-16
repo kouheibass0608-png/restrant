@@ -1,5 +1,8 @@
 # TableCheck 空席ウォッチャー
 
+> **監視停止中 (2026-08-16)**: 目的の日程を予約できたため、ロブション・ロオジエともに
+> 定期チェックと通知を停止しています。コード・設定・取得履歴は再開できるよう保持しています。
+
 [ガストロノミー "ジョエル・ロブション"](https://www.tablecheck.com/ja/shops/joelrobuchon/reserve)
 と[ロオジエ](https://www.tablecheck.com/ja/shops/shiseido-losier/reserve)の
 TableCheck 予約枠を定期的にチェックし、
