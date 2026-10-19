@@ -1,0 +1,15 @@
+{
+  "checkin": "2026-12-13",
+  "rooms": {
+    "ginzanso": [],
+    "kosekiya": [],
+    "kosekikan": [],
+    "notoya": [],
+    "takimikan": []
+  },
+  "initialized": true,
+  "failures": 0,
+  "failure_warned": false,
+  "checked_count": 5,
+  "last_run_jst": "2026-10-20T08:37:22+09:00"
+}
