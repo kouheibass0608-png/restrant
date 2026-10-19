@@ -1,4 +1,9 @@
-"""銀山温泉・指定日の公式予約カレンダー空室監視（通知のみ、予約しない）。"""
+"""銀山温泉 2026-12-13 宿泊の空室監視（公式予約カレンダー、通知のみ）。
+
+5施設の489ban「お部屋一覧」表をPlaywrightで読む。
+対象日の<td>内にある予約リンクのみを空室と判断し、満室アイコンは満室と判断。
+部屋の定員・予約確定はリンク先で確認すること（自動予約は行わない）。
+"""
 from __future__ import annotations
 
 import argparse
@@ -9,220 +14,191 @@ import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from tablecheck_watcher.config import NtfyConfig
 from tablecheck_watcher.notify import send_ntfy
 
-TARGET_DATE = date(2026, 12, 13)
+CHECKIN = date(2026, 12, 13)
+CALENDAR_START = "2026-12-01"
+STATE = Path("state.ginzan.json")
 JST = timezone(timedelta(hours=9))
-STATE_PATH = Path("state.ginzan.json")
-# 銀山温泉旅館組合の公式宿一覧から辿れる11軒の予約入口。
 INNS = {
-    "fujiya": "藤屋",
-    "ginzanso": "銀山荘",
-    "showakan": "昭和館",
-    "kozankaku": "古山閣",
-    "notoya": "能登屋旅館",
-    "matsumoto": "旅館 松本",
-    "yanadaya": "御宿 やなだ屋",
-    "itouya": "旅籠 いとうや",
-    "takimikan": "瀧見舘",
-    "kosekiya": "古勢起屋別館",
-    "kosekikan": "本館古勢起屋",
+    "ginzanso": ("仙峡の宿 銀山荘", "ginzanso"),
+    "kosekiya": ("古勢起屋別館", "kosekiya"),
+    "kosekikan": ("本館古勢起屋", "kosekikan"),
+    "notoya": ("能登屋旅館", "notoyaryokan"),
+    "takimikan": ("滝と蕎麦の宿 瀧見舘", "takimikan"),
 }
-SITE_URL = "https://www.nj-yoyaku.net/{slug}/plan.aspx?PID=-1"
 
-
-def classify_day_cell(text: str) -> str:
-    """カレンダーの *その日* のセルだけを判定。意味が不明ならunknown。"""
-    s = re.sub(r"[\s\u3000]+", "", text or "")
-    s = re.sub(r"^13(?:日|日曜)?", "", s, count=1)
-    if any(mark in s for mark in ("○", "◯", "〇", "◎", "△")):
-        return "available"
-    # '1' のような空室数表記。ただし日付の数字とは区別する。
-    if re.fullmatch(r"[1-9]\d*(?:室|部屋|件)?", s):
-        return "available"
-    if any(mark in s for mark in ("満室", "受付終了", "予約不可", "×", "✕", "✖", "−", "－", "-")):
-        return "full"
-    return "unknown"
-
-
-def aggregate(cells: list[str]) -> str:
-    """少なくとも1つの空きは肯定的証拠、全セル満室なら満室。"""
-    statuses = [classify_day_cell(c) for c in cells]
-    if "available" in statuses:
-        return "available"
-    if statuses and all(s == "full" for s in statuses):
-        return "full"
-    return "unknown"
-
-
-# カレンダーのみを対象にする。ページ全体の『予約可能』等の文字列では判定しない。
-CALENDAR_CELLS_JS = r"""(day) => {
-  const result = [];
-  for (const table of document.querySelectorAll('table')) {
-    const rows = [...table.querySelectorAll('tr')];
-    const weekdayCount = [...table.querySelectorAll('th')].filter(
-      x => /^(日|月|火|水|木|金|土)(曜日)?$/.test(x.innerText.trim())
-    ).length;
-    if (weekdayCount < 5 && !/calendar|calender|カレンダー/i.test(table.className || '')) continue;
-    for (const cell of table.querySelectorAll('td')) {
-      const s = (cell.innerText || '').trim();
-      if (new RegExp('^' + day + '(?=\\D|$)').test(s)) {
-        result.push(s.slice(0, 120));
-      }
-    }
-  }
-  // 非table型の予約カレンダーを使用するサイトに備えた保守的fallback。
-  if (!result.length) {
-    for (const el of document.querySelectorAll('[data-date], [data-day]')) {
-      const key = el.getAttribute('data-date') || el.getAttribute('data-day') || '';
-      if (key === '2026-12-13' || key === '20261213') {
-        result.push((el.innerText || '').trim().slice(0, 120));
-      }
-    }
-  }
-  return result.slice(0, 30);
+# 2026-10-20にGitHub Actionsから実ページへのアクセスとカレンダーDOMを検証。
+CELL_JS = r"""() => {
+  const tables=[...document.querySelectorAll('table')].filter(t=>{
+    const heads=[...t.querySelectorAll('thead th')].map(h=>(h.innerText||'').replace(/\s+/g,''));
+    return heads.length === 14 && heads[0].startsWith('12/1') && heads[12] === '13日';
+  });
+  return tables.map(t=>{
+    const heads=[...t.querySelectorAll('thead th')];
+    const row=[...t.querySelectorAll('tbody tr')].find(r=>r.querySelectorAll('td').length === heads.length);
+    const td=row?.querySelectorAll('td')[12];
+    if(!td)return null;
+    return {
+      icons:[...td.querySelectorAll('i')].map(x=>String(x.className)),
+      text:(td.innerText||'').trim(),
+      links:[...td.querySelectorAll('a[href]')].map(a=>({href:a.href,text:(a.innerText||'').trim()})),
+    };
+  });
 }"""
 
 
-def set_party_size(page, people: int) -> bool:
-    """人数のセレクトが確認できなければ安全側で監視失敗にする。"""
-    for selector in page.locator("select").all():
-        try:
-            options = selector.locator("option").all()
-            for option in options:
-                label = (option.inner_text() or "").strip().replace(" ", "")
-                if re.fullmatch(rf"{people}(?:名|人|名様)(?:1室)?", label):
-                    selector.select_option(value=option.get_attribute("value"))
-                    page.wait_for_timeout(600)
-                    return True
-        except Exception:
-            continue
-    return False
+def calendar_url(client: str) -> str:
+    return f"https://reserve.489ban.net/client/{client}/0/plan/availability/room/stay?date={CALENDAR_START}"
 
 
-def month_on_page(page, year: int, month: int) -> bool:
-    # 非表示テンプレート等の月表示を誤読しないよう可視要素のみ。
-    return page.get_by_text(re.compile(rf"{year}\s*年\s*0?{month}\s*月")).first.is_visible(timeout=3000)
+def booking_url(href: str) -> bool:
+    """正確な宿泊日を含む489banの予約リンク以外は通知しない。"""
+    try:
+        parsed = urlparse(href)
+        if parsed.scheme != "https" or parsed.netloc != "reserve.489ban.net":
+            return False
+        if re.search(r"^/client/[^/]+/0/plan/room/\d+/stay$", parsed.path) is None:
+            return False
+        return parse_qs(parsed.query).get("date") == [CHECKIN.isoformat()]
+    except (ValueError, TypeError):
+        return False
 
 
-def check_inn(browser, slug: str, party_size: int) -> tuple[str, list[str]]:
-    """ページ操作が成立したときだけ full / available を返す。"""
+def classify_cells(raw: object) -> tuple[str, list[str], int]:
+    """空きリンクがあればavailable、全て満室/提供なしはunavailable、その他unknown。"""
+    if not isinstance(raw, list) or not raw:
+        return "unknown", [], 0
+    available: set[str] = set()
+    closed = 0
+    for cell in raw:
+        if not isinstance(cell, dict):
+            return "unknown", [], len(raw)
+        links = cell.get("links") or []
+        for link in links:
+            if not isinstance(link, dict):
+                continue
+            href = str(link.get("href") or "")
+            if booking_url(href) and re.fullmatch(r"[1-9]\d*", str(link.get("text") or "").strip()):
+                available.add(href)
+        icons = cell.get("icons") or []
+        if any("text-danger" in s and ("fa-xmark" in s or "fa-minus" in s) for s in icons):
+            closed += 1
+    if available:
+        return "available", sorted(available), len(raw)
+    if closed == len(raw):
+        return "unavailable", [], len(raw)
+    return "unknown", [], len(raw)
+
+
+def inspect_inn(browser, client: str) -> tuple[str, list[str], int]:
     page = browser.new_page(locale="ja-JP", timezone_id="Asia/Tokyo")
     try:
-        page.goto(SITE_URL.format(slug=slug), wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(900)
-        if not set_party_size(page, party_size):
-            raise RuntimeError("2名等の人数指定欄を特定できません")
-        # 基本画面は当月から始まる。上限8回で無限巡回を防ぐ。
-        for _ in range(8):
-            if month_on_page(page, TARGET_DATE.year, TARGET_DATE.month):
-                break
-            nxt = page.get_by_text("次月", exact=True).first
-            if not nxt.is_visible(timeout=3000):
-                raise RuntimeError("次月への操作が見つかりません")
-            nxt.click(timeout=8000)
-            page.wait_for_timeout(800)
-        else:
-            raise RuntimeError("対象月へ移動できません")
+        resp = page.goto(calendar_url(client), wait_until="domcontentloaded", timeout=30000)
+        if resp is None or resp.status != 200:
+            raise RuntimeError(f"HTTP {resp.status if resp else 'none'}")
         page.wait_for_timeout(500)
-        cells = page.evaluate(CALENDAR_CELLS_JS, TARGET_DATE.day)
-        status = aggregate(cells)
+        result = page.evaluate(CELL_JS)
+        status, links, rooms = classify_cells(result)
         if status == "unknown":
-            raise RuntimeError(f"12/13のカレンダー値を安全に判定できません: {cells[:4]!r}")
-        return status, cells
+            raise RuntimeError(f"予約カレンダー判定不可 (room_rows={rooms})")
+        return status, links, rooms
     finally:
         page.close()
 
 
-def read_state() -> dict:
-    if not STATE_PATH.exists():
-        return {"statuses": {}, "failures": 0, "failure_warned": False}
-    data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-    if data.get("target_date") != TARGET_DATE.isoformat() or data.get("party_size") != get_party_size():
-        return {"statuses": {}, "failures": 0, "failure_warned": False}
-    return data
-
-
-def get_party_size() -> int:
-    n = int(os.getenv("GINZAN_PARTY_SIZE", "2"))
-    if not 1 <= n <= 8:
-        raise ValueError("GINZAN_PARTY_SIZEは1〜8の整数にしてください")
-    return n
-
-
-def notify(title: str, message: str, url: str, *, priority: int = 4) -> None:
+def send(title: str, body: str, url: str, priority: int = 4) -> None:
     cfg = NtfyConfig(
         server=os.getenv("NTFY_SERVER") or "https://ntfy.sh",
         topic=os.getenv("NTFY_TOPIC") or "",
         token=os.getenv("NTFY_TOKEN") or "",
     )
-    send_ntfy(cfg, title, message, click=url, priority=priority, tags=["hotel"])
+    send_ntfy(cfg, title, body, click=url, priority=priority, tags=["hotel"])
+
+
+def load_state() -> dict:
+    try:
+        data = json.loads(STATE.read_text("utf-8"))
+        if data.get("checkin") == CHECKIN.isoformat():
+            return data
+    except (FileNotFoundError, ValueError, TypeError):
+        pass
+    return {"checkin": CHECKIN.isoformat(), "rooms": {}, "failures": 0, "failure_warned": False}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["check", "dry-run", "test-notify"], nargs="?", default="check")
+    parser.add_argument("mode", choices=("check", "dry-run", "test-notify"), nargs="?", default="check")
     args = parser.parse_args()
-    party = get_party_size()
     if args.mode == "test-notify":
-        notify("銀山温泉 空室通知テスト", "2026/12/13・通知経路の確認です。", "https://www.ginzanonsen.jp/yado/")
+        send("銀山温泉・通知テスト", "12/13の空室通知テストです。予約はしていません。",
+             "https://www.ginzanonsen.jp/yado/")
         return 0
-    if date.today() > TARGET_DATE and datetime.now(JST).date() > TARGET_DATE:
-        print("監視対象日を過ぎたため終了しました。")
+    if datetime.now(JST).date() > CHECKIN:
+        print("宿泊日を過ぎたためチェックを終了します")
         return 0
     if args.mode == "check" and not os.getenv("NTFY_TOPIC"):
-        raise RuntimeError("NTFY_TOPIC secretが必要です。")
-    state = read_state()
-    old = dict(state.get("statuses") or {})
-    updated = dict(old)
-    succeeded = 0
+        print("ERROR: GitHub Secret NTFY_TOPIC が未設定です", file=sys.stderr)
+        return 2
+
+    state = load_state()
+    old_rooms = dict(state.get("rooms") or {})
+    new_rooms = dict(old_rooms)
+    checked = 0
+    found = []
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
-            for slug, name in INNS.items():
-                url = SITE_URL.format(slug=slug)
+            for key, (name, client) in INNS.items():
                 try:
-                    status, cells = check_inn(browser, slug, party)
-                    succeeded += 1
-                    print(f"{name}: {status} | 12/13セル: {cells[:3]!r}", flush=True)
-                    if args.mode == "check" and status == "available" and old.get(slug) != "available":
-                        notify(
-                            f"銀山温泉 空室あり：{name}",
-                            f"2026年12月13日(日) 1泊 / {party}名でカレンダーに空き表示を検知。予約画面で必ず最終確認してください。",
-                            url,
-                            priority=5,
-                        )
+                    status, links, room_count = inspect_inn(browser, client)
+                    checked += 1
+                    print(f"{name}: {status}, room_types={room_count}, available={len(links)}", flush=True)
+                    previous = set(old_rooms.get(key) or [])
+                    fresh = sorted(set(links) - previous)
                     if args.mode == "check":
-                        updated[slug] = status
+                        for link in fresh:
+                            send(
+                                f"銀山温泉 12/13 空室候補：{name}",
+                                "2026/12/13(日)チェックイン・1泊の空室表示を検知しました。"
+                                "客室定員・人数・料金はリンク先で必ず確認してください。",
+                                link, priority=5,
+                            )
+                        new_rooms[key] = links
+                    found.extend((name, link) for link in links)
                 except Exception as e:
                     print(f"CHECK_UNKNOWN {name}: {type(e).__name__}: {e}", flush=True)
-                time.sleep(1.5)  # 同一予約ドメインへの過剰アクセス回避
+                time.sleep(1.0)
         finally:
             browser.close()
+
     if args.mode == "dry-run":
-        print(f"dry-run 成功判定 {succeeded}/{len(INNS)}（通知・状態保存なし）")
-        return 0 if succeeded else 2
-    fails = 0 if succeeded else int(state.get("failures", 0)) + 1
-    warned = False if succeeded else bool(state.get("failure_warned"))
-    if fails >= 3 and not warned:
-        notify("銀山温泉 監視エラー", "3回連続で全旅館の空室判定に失敗しました。GitHub Actionsのログを確認してください。",
-               "https://github.com/kouheibass0608-png/restrant/actions", priority=3)
+        print(f"dry-run 判定可能 {checked}/{len(INNS)}軒, 空室候補 {len(found)}件")
+        return 0 if checked else 2
+    if checked and not state.get("initialized"):
+        send("銀山温泉 監視開始", f"12月13日宿泊の空室監視を開始しました（判定成功 {checked}/{len(INNS)}軒）。",
+             "https://www.ginzanonsen.jp/yado/", priority=3)
+    failures = 0 if checked else int(state.get("failures", 0)) + 1
+    warned = False if checked else bool(state.get("failure_warned"))
+    if failures >= 3 and not warned:
+        send("銀山温泉 監視エラー", "3回連続で全施設の確認に失敗しています。GitHub Actionsのログを確認してください。",
+             "https://github.com/kouheibass0608-png/restrant/actions", priority=3)
         warned = True
     payload = {
-        "target_date": TARGET_DATE.isoformat(),
-        "party_size": party,
-        "statuses": updated,
-        "failures": fails,
+        "checkin": CHECKIN.isoformat(),
+        "rooms": new_rooms,
+        "initialized": bool(state.get("initialized")) or bool(checked),
+        "failures": failures,
         "failure_warned": warned,
-        "last_checked_at": datetime.now(JST).isoformat(timespec="seconds"),
-        "successful_checks": succeeded,
+        "checked_count": checked,
+        "last_run_jst": datetime.now(JST).isoformat(timespec="seconds"),
     }
-    STATE_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"Completed {succeeded}/{len(INNS)}; state saved.", flush=True)
-    return 0 if succeeded else 2
+    STATE.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return 0 if checked else 2
 
 
 if __name__ == "__main__":
