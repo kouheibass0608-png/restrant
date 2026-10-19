@@ -1,0 +1,25 @@
+name: probe-ginzan-extra (diagnostics)
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/probe_ginzan_extra.py"
+      - ".github/workflows/probe-ginzan-extra.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install browser
+        run: |
+          python -m pip install playwright==1.56.0
+          python -m playwright install --with-deps chromium
+      - name: Probe remaining official reservation pages
+        run: python scripts/probe_ginzan_extra.py
