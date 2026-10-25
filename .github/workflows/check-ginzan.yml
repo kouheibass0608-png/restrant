@@ -62,3 +62,33 @@ jobs:
           done
           echo "::warning::Availability state push failed (potential duplicate notifications)"
           exit 0
+      - name: Notify if Ginzan workflow failed
+        if: ${{ failure() }}
+        continue-on-error: true
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+          NTFY_SERVER: ${{ vars.NTFY_SERVER }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import os
+          from tablecheck_watcher.config import NtfyConfig
+          from tablecheck_watcher.notify import send_ntfy
+          topic = os.getenv("NTFY_TOPIC", "")
+          if topic:
+              send_ntfy(
+                  NtfyConfig(
+                      server=os.getenv("NTFY_SERVER") or "https://ntfy.sh",
+                      topic=topic,
+                      token=os.getenv("NTFY_TOKEN") or "",
+                  ),
+                  "銀山温泉 監視の実行失敗",
+                  "12/13の空室監視が正常終了しませんでした。予約サイトを確認できていない可能性があります。GitHub Actionsのログをご確認ください。",
+                  click=os.environ["WORKFLOW_URL"],
+                  priority=4,
+                  tags=["warning", "hotel"],
+              )
+          else:
+              print("NTFY_TOPIC is not configured; failed run cannot send notification.")
+          PY
