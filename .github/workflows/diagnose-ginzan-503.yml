@@ -1,0 +1,23 @@
+name: diagnose-ginzan-503 (manual read-only)
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/diagnose-ginzan-503.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install browser
+        run: |
+          python -m pip install playwright==1.56.0
+          python -m playwright install --with-deps chromium
+      - name: Inspect HTTP status from two public reservation sites
+        run: python scripts/diagnose_ginzan_503.py
