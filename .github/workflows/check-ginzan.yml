@@ -39,6 +39,7 @@ jobs:
         run: |
           python -m pip install playwright==1.56.0
           python -m playwright install --with-deps chromium
+      # 予約サイトが503の場合は監視失敗として扱い、満室と誤認しない。
       - name: Check December 13 hotel availability
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
