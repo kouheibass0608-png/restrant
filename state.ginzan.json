@@ -4,12 +4,14 @@
     "ginzanso": [],
     "kosekiya": [],
     "kosekikan": [],
-    "notoya": [],
+    "notoya": [
+      "https://reserve.489ban.net/client/notoyaryokan/0/plan/room/38491/stay?date=2026-12-13&roomCount=1#chooseFromRoom"
+    ],
     "takimikan": []
   },
   "initialized": true,
   "failures": 0,
   "failure_warned": false,
   "checked_count": 5,
-  "last_run_jst": "2026-11-04T07:37:57+09:00"
+  "last_run_jst": "2026-11-04T11:41:58+09:00"
 }
