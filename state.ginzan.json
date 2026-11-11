@@ -5,11 +5,13 @@
     "kosekiya": [],
     "kosekikan": [],
     "notoya": [],
-    "takimikan": []
+    "takimikan": [
+      "https://reserve.489ban.net/client/takimikan/0/plan/room/17759/stay?date=2026-12-13&roomCount=1#chooseFromRoom"
+    ]
   },
   "initialized": true,
   "failures": 0,
   "failure_warned": false,
   "checked_count": 5,
-  "last_run_jst": "2026-11-11T12:11:07+09:00"
+  "last_run_jst": "2026-11-11T20:14:12+09:00"
 }
